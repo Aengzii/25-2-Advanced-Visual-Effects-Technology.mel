@@ -1,0 +1,110 @@
+{\rtf1\ansi\ansicpg949\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww16580\viewh12920\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 global proc makeStretchyIK(string $startJNT, string $endJNT)\{\
+    \
+    string $ikHDLs[] = `ikHandle -sol "ikRPsolver" -sj $startJNT -ee $endJNT -n "stretchyIK_HDL"`;\
+    string $ikHDL = $ikHDLs[0];\
+    \
+    float $endPos[] = `xform -q -ws -t $endJNT`;\
+    \
+    string $controls[] = `circle -c $endPos[0] $endPos[1] $endPos[2] -nr 0 1 0 -n "stretchyIK_CON"`;\
+    string $control = $controls[0];\
+    \
+    makeHomeNull($control);\
+    \
+    parent $ikHDL $control;\
+    \
+    string $shoulderPosNULs[] = `spaceLocator -n "shoulderPos_NUL"`;\
+    string $shoulderPosNUL = $shoulderPosNULs[0];\
+    string $handPosNULs[] = `spaceLocator -n "handPos_NUL"`;\
+    string $handPosNUL = $handPosNULs[0];\
+    \
+    string $shoulderConstraints[] = `pointConstraint $startJNT $shoulderPosNUL`;\
+    string $handConstraints[] = `pointConstraint $ikHDL $handPosNUL`;\
+    \
+    // Get middleJNT (elbow)\
+    string $childJoints[] = `listRelatives -c -type "joint" $startJNT`;\
+    string $middleJNT = $childJoints[0];\
+    \
+    // Create utility nodes\
+    string $distNode = `shadingNode -asUtility distanceBetween -n "stretchyIK_DIST"`;\
+    string $addNode = `shadingNode -asUtility addDoubleLinear -n "stretchyIK_ADD"`;\
+    string $divideNode1 = `shadingNode -asUtility multiplyDivide -n "stretchyIK_DIV1"`;\
+    string $divideNode2 = `shadingNode -asUtility multiplyDivide -n "stretchyIK_DIV2"`;\
+    string $conditionNode = `shadingNode -asUtility condition -n "stretchyIK_COND"`;\
+    \
+    connectAttr -f ($shoulderPosNUL + ".worldMatrix[0]") ($distNode + ".inMatrix1");\
+    connectAttr -f ($handPosNUL + ".worldMatrix[0]") ($distNode + ".inMatrix2");\
+    \
+    float $upperArmLength = `getAttr ($middleJNT + ".translateX")`;\
+    float $lowerArmLength = `getAttr ($endJNT + ".translateX")`;\
+    \
+    connectAttr -f ($middleJNT + ".translateX") ($addNode + ".input1");\
+    connectAttr -f ($endJNT + ".translateX") ($addNode + ".input2");\
+    \
+    setAttr ($divideNode1 + ".operation") 2; // Divide operation\
+    connectAttr -f ($distNode + ".distance") ($divideNode1 + ".input1X");\
+    connectAttr -f ($addNode + ".output") ($divideNode1 + ".input2X");\
+    \
+    // Add stretch on/off attribute to control\
+    if (!`attributeExists "stretchyIK" $control`) \{\
+        addAttr -ln "stretchyIK" -at "enum" -en "off:on:" -k 1 $control;\
+    \}\
+    \
+    setAttr ($divideNode2 + ".operation") 1; // Multiply operation\
+    connectAttr -f ($control + ".stretchyIK") ($divideNode2 + ".input1X");\
+    connectAttr -f ($divideNode1 + ".outputX") ($divideNode2 + ".input2X");\
+    \
+    setAttr ($conditionNode + ".secondTerm") 1.0;\
+    setAttr ($conditionNode + ".operation") 4; // Less or Equal\
+    setAttr ($conditionNode + ".colorIfTrueR") 1.0;\
+    \
+    connectAttr -f ($divideNode2 + ".outputX") ($conditionNode + ".firstTerm");\
+    connectAttr -f ($divideNode2 + ".outputX") ($conditionNode + ".colorIfFalseR");\
+    \
+    connectAttr -f ($conditionNode + ".outColorR") ($startJNT + ".scaleX");\
+    connectAttr -f ($conditionNode + ".outColorR") ($middleJNT + ".scaleX");\
+    \
+    // Optional: Add squash attributes (volume preservation)\
+    if (!`attributeExists "volumePreservation" $control`) \{\
+        addAttr -ln "volumePreservation" -at -at "enum" -en "off:on:" -k 1 $control;\
+    \}\
+    \
+    // Create nodes for squash\
+    string $sqrtNode = `shadingNode -asUtility multiplyDivide -n "stretchyIK_SQRT"`;\
+    string $blendNode = `shadingNode -asUtility blendColors -n "stretchyIK_BLEND"`;\
+    \
+    // Set up sqrt node for inverse square root (volume preservation)\
+    setAttr ($sqrtNode + ".operation") 3; // Power operation\
+    connectAttr -f ($conditionNode + ".outColorR") ($sqrtNode + ".input1X");\
+    setAttr ($sqrtNode + ".input2X") -0.5; // Inverse square root\
+    \
+    // Set up blend node\
+    connectAttr -f ($control + ".volumePreservation") ($blendNode + ".blender");\
+    setAttr ($blendNode + ".color1R") 1.0;\
+    connectAttr -f ($sqrtNode + ".outputX") ($blendNode + ".color2R");\
+    \
+    // Connect to Y and Z scale for squash effect\
+    connectAttr -f ($blendNode + ".outputR") ($startJNT + ".scaleY");\
+    connectAttr -f ($blendNode + ".outputR") ($startJNT + ".scaleZ");\
+    connectAttr -f ($blendNode + ".outputR") ($middleJNT + ".scaleY");\
+    connectAttr -f ($blendNode + ".outputR") ($middleJNT + ".scaleZ");\
+    \
+    // Clean up - hide locators\
+    setAttr ($shoulderPosNUL + ".visibility") 0;\
+    setAttr ($handPosNUL + ".visibility") 0;\
+    \
+    // Print success message\
+    print ("Stretchy IK setup complete for " + $startJNT + " to " + $endJNT + "\\n");\
+    print ("Control: " + $control + "\\n");\
+    print ("IK Handle: " + $ikHDL + "\\n");\
+\}\
+\
+\
+makeStretchyIK("shoulder_JNT", "wrist_JNT");\
+}
